@@ -1,260 +1,248 @@
 /**
- * Meta AI watermark remover — server-side, using sharp.
+ * Meta AI watermark remover — server-side, using MI-GAN neural network.
  *
- * Uses a "clean source fill" approach:
- *   1. Extract a clean strip from ABOVE the watermark (not including it)
- *   2. Stretch it to cover the watermark area
- *   3. Apply moderate blur to blend textures
- *   4. Composite with a feathered mask
+ * Uses the MI-GAN model (via onnxruntime-node) to inpaint the Meta AI
+ * watermark. This is the SAME model used by the working
+ * https://watermark-remover-eosin-tau.vercel.app/ app.
  *
- * This works for semi-transparent watermarks because we REPLACE the
- * watermark pixels entirely with clean content from the same image,
- * rather than blurring the watermark area (which leaves a ghost).
+ * MI-GAN is a generative inpainting network that reconstructs the masked
+ * region using surrounding pixel information — far more effective than
+ * sharp's mirror+blur for semi-transparent watermarks.
+ *
+ * Flow:
+ *   1. Load the image with sharp
+ *   2. Detect the watermark region (bottom-right corner)
+ *   3. Extract a crop around the watermark
+ *   4. Build a mask (0 = erase, 255 = keep)
+ *   5. Run MI-GAN inference on the crop
+ *   6. Paste the inpainted result back onto the original
  */
 
 import sharp from "sharp";
+import * as ort from "onnxruntime-node";
+import path from "path";
+import fs from "fs";
 
-// Watermark dimensions — generous to FULLY cover the "Meta AI" text + icon + margin
-const WATERMARK_WIDTH_FRAC = 0.15;   // 15% of image width (very generous)
-const WATERMARK_HEIGHT_FRAC = 0.10;  // 10% of image height
-const WATERMARK_INSET_X = 0.002;      // 0.2% inset from right edge
-const WATERMARK_INSET_Y = 0.003;      // 0.3% inset from bottom edge
-const FEATHER = 0.35;                 // feather for blending edges
+const MODEL_PATH = path.join(
+  process.cwd(),
+  "data",
+  "models",
+  "migan_pipeline_v2.onnx",
+);
+
+// Watermark region: bottom-right corner
+const WM_WIDTH_FRAC = 0.12;   // 12% of image width
+const WM_HEIGHT_FRAC = 0.07;  // 7% of image height
+const WM_INSET_X = 0.003;
+const WM_INSET_Y = 0.005;
+
+// MI-GAN crop parameters (from watermark-remover/src/lib/inpaint.ts)
+const CROP_TARGET = 512;
+const CROP_PAD = 96;
+
+let sessionPromise: Promise<ort.InferenceSession> | null = null;
+
+function getSession(): Promise<ort.InferenceSession> {
+  if (!sessionPromise) {
+    sessionPromise = (async () => {
+      if (!fs.existsSync(MODEL_PATH)) {
+        throw new Error(`MI-GAN model not found at ${MODEL_PATH}`);
+      }
+      console.log("[watermark-migan] Loading MI-GAN model...");
+      const session = await ort.InferenceSession.create(MODEL_PATH, {
+        executionProviders: ["cpu"],
+      });
+      console.log("[watermark-migan] Model loaded:", session.inputNames);
+      return session;
+    })();
+    sessionPromise.catch((err) => {
+      sessionPromise = null;
+      throw err;
+    });
+  }
+  return sessionPromise;
+}
+
+const clamp = (v: number, lo: number, hi: number) =>
+  Math.max(lo, Math.min(hi, v));
+
+function computeCrop(
+  bboxX: number, bboxY: number, bboxW: number, bboxH: number,
+  w: number, h: number,
+): { x: number; y: number; w: number; h: number } {
+  let cw = Math.min(w, Math.max(CROP_TARGET, bboxW + CROP_PAD * 2));
+  let ch = Math.min(h, Math.max(CROP_TARGET, bboxH + CROP_PAD * 2));
+  cw = Math.min(w, Math.ceil(cw / 256) * 256);
+  ch = Math.min(h, Math.ceil(ch / 256) * 256);
+  const x = clamp(Math.round(bboxX + bboxW / 2 - cw / 2), 0, w - cw);
+  const y = clamp(Math.round(bboxY + bboxH / 2 - ch / 2), 0, h - ch);
+  return { x, y, w: cw, h: ch };
+}
+
+/** Chebyshev dilation of a binary mask. */
+function dilateMask(
+  mask: Uint8Array, w: number, h: number, r: number,
+): Uint8Array {
+  const pass = (src: Uint8Array, stride: number, lineLen: number, lines: number) => {
+    const out = new Uint8Array(src.length);
+    for (let l = 0; l < lines; l++) {
+      const base = l * (stride === 1 ? lineLen : 1);
+      let dist = lineLen;
+      for (let i = 0; i < lineLen; i++) {
+        const idx = base + i * stride;
+        dist = src[idx] ? 0 : dist + 1;
+        if (dist <= r) out[idx] = 255;
+      }
+      dist = lineLen;
+      for (let i = lineLen - 1; i >= 0; i--) {
+        const idx = base + i * stride;
+        dist = src[idx] ? 0 : dist + 1;
+        if (dist <= r) out[idx] = 255;
+      }
+    }
+    return out;
+  };
+  const rows = pass(mask, 1, w, h);
+  return pass(rows, w, h, w);
+}
+
+/** Separable box blur of a 0/255 mask. */
+function blurMask(
+  mask: Uint8Array, w: number, h: number, r: number,
+): Uint8Array {
+  const win = 2 * r + 1;
+  const tmp = new Uint8Array(mask.length);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let sum = 0;
+    for (let i = -r; i <= r; i++) sum += mask[row + clamp(i, 0, w - 1)];
+    for (let x = 0; x < w; x++) {
+      tmp[row + x] = Math.round(sum / win);
+      sum += mask[row + clamp(x + r + 1, 0, w - 1)] - mask[row + clamp(x - r, 0, w - 1)];
+    }
+  }
+  const out = new Uint8Array(mask.length);
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let i = -r; i <= r; i++) sum += tmp[clamp(i, 0, h - 1) * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = Math.round(sum / win);
+      sum += tmp[clamp(y + r + 1, 0, h - 1) * w + x] - tmp[clamp(y - r, 0, h - 1) * w + x];
+    }
+  }
+  return out;
+}
 
 /**
- * Remove the Meta AI watermark from an image buffer.
+ * Remove the Meta AI watermark from an image buffer using MI-GAN.
  */
 export async function removeMetaWatermark(
   imageBuffer: Buffer | ArrayBuffer,
 ): Promise<Buffer> {
-  const inputBuf = Buffer.isBuffer(imageBuffer)
-    ? imageBuffer
-    : Buffer.from(imageBuffer);
-
+  const inputBuf = Buffer.isBuffer(imageBuffer) ? imageBuffer : Buffer.from(imageBuffer);
   const src = sharp(inputBuf);
   const meta = await src.metadata();
   const w = meta.width ?? 0;
   const h = meta.height ?? 0;
 
-  if (w < 64 || h < 64) {
-    return src.png().toBuffer();
-  }
+  if (w < 64 || h < 64) return src.png().toBuffer();
 
-  // Compute watermark region
-  const wmW = Math.round(w * WATERMARK_WIDTH_FRAC);
-  const wmH = Math.round(h * WATERMARK_HEIGHT_FRAC);
-  const insetX = Math.round(w * WATERMARK_INSET_X);
-  const insetY = Math.round(h * WATERMARK_INSET_Y);
+  // 1. Watermark region (bottom-right corner)
+  const wmW = Math.round(w * WM_WIDTH_FRAC);
+  const wmH = Math.round(h * WM_HEIGHT_FRAC);
+  const insetX = Math.round(w * WM_INSET_X);
+  const insetY = Math.round(h * WM_INSET_Y);
   const wmX = Math.max(0, w - wmW - insetX);
   const wmY = Math.max(0, h - wmH - insetY);
 
-  // Source region: extract from ABOVE the watermark (clean pixels)
-  const srcStripH = Math.max(wmH, Math.round(h * 0.05));
-  const srcY = Math.max(0, wmY - srcStripH);
+  // 2. Compute crop around the watermark
+  const crop = computeCrop(wmX, wmY, wmW, wmH, w, h);
 
-  if (srcY < 1) {
-    return src.png().toBuffer();
-  }
-
-  // 1. Compute the local average color from the border AROUND the watermark
-  //    (not including the watermark itself). This is the color the replacement
-  //    should match so it blends with the surrounding content.
-  const borderStrip = await sharp(inputBuf)
-    .extract({
-      left: Math.max(0, wmX - 3),
-      top: Math.max(0, wmY - 3),
-      width: Math.min(wmW + 6, w - Math.max(0, wmX - 3)),
-      height: Math.min(wmH + 6, h - Math.max(0, wmY - 3)),
-    })
+  // 3. Get raw RGBA pixels for the crop
+  const { data: rgba, info } = await src
+    .clone()
+    .extract({ left: crop.x, top: crop.y, width: crop.w, height: crop.h })
+    .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  // Sample only the outer ring (3px border) for the average color
-  let avgR = 0, avgG = 0, avgB = 0, count = 0;
-  const bW = borderStrip.info.width;
-  const bH = borderStrip.info.height;
-  const bCh = borderStrip.info.channels;
-  for (let y = 0; y < bH; y++) {
-    for (let x = 0; x < bW; x++) {
-      if (y < 3 || y >= bH - 3 || x < 3 || x >= bW - 3) {
-        const idx = (y * bW + x) * bCh;
-        avgR += borderStrip.data[idx];
-        avgG += borderStrip.data[idx + 1];
-        avgB += borderStrip.data[idx + 2];
-        count++;
-      }
+  const cropW = info.width;
+  const cropH = info.height;
+  const cropSize = cropW * cropH;
+
+  // 4. Build the mask (255 = erase, 0 = keep — our convention)
+  const cropMask = new Uint8Array(cropSize);
+  const maskLocalX = wmX - crop.x;
+  const maskLocalY = wmY - crop.y;
+  for (let y = maskLocalY; y < Math.min(cropH, maskLocalY + wmH); y++) {
+    for (let x = maskLocalX; x < Math.min(cropW, maskLocalX + wmW); x++) {
+      cropMask[y * cropW + x] = 255;
     }
   }
-  avgR = count > 0 ? Math.round(avgR / count) : 128;
-  avgG = count > 0 ? Math.round(avgG / count) : 128;
-  avgB = count > 0 ? Math.round(avgB / count) : 128;
 
-  // 2. Create a solid color fill matching the local average + slight noise
-  //    Use a solid color + heavy blur to create a smooth gradient
-  const solidSvg = `<svg width="${wmW}" height="${wmH}">
-    <defs>
-      <filter id="n">
-        <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/>
-        <feColorMatrix type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.08 0"/>
-        <feComposite in2="SourceGraphic" operator="atop"/>
-      </filter>
-    </defs>
-    <rect width="${wmW}" height="${wmH}" fill="rgb(${avgR},${avgG},${avgB})"/>
-    <rect width="${wmW}" height="${wmH}" fill="rgb(${avgR},${avgG},${avgB})" filter="url(#n)"/>
-  </svg>`;
+  // 5. Dilate the mask
+  const r = Math.max(3, Math.round((3 * Math.max(cropW, cropH)) / 512));
+  const dilated = dilateMask(cropMask, cropW, cropH, r);
 
-  const solidPatch = await sharp(Buffer.from(solidSvg))
-    .blur(5)
-    .toBuffer();
+  // 6. Convert RGBA → CHW RGB for MI-GAN
+  const chw = new Uint8Array(3 * cropSize);
+  for (let i = 0; i < cropSize; i++) {
+    chw[i] = rgba[i * 4];
+    chw[cropSize + i] = rgba[i * 4 + 1];
+    chw[2 * cropSize + i] = rgba[i * 4 + 2];
+  }
 
-  // 3. Composite with overscan + feathered edges for seamless blending
-  const overscanX = Math.round(wmW * 0.1);
-  const overscanY = Math.round(wmH * 0.1);
-  const compX = Math.max(0, wmX - overscanX);
-  const compY = Math.max(0, wmY - overscanY);
+  // 7. Build model mask (0 = erase, 255 = keep — MI-GAN convention, INVERTED)
+  const modelMask = new Uint8Array(cropSize);
+  for (let i = 0; i < cropSize; i++) modelMask[i] = dilated[i] === 0 ? 255 : 0;
 
-  // Create the feathered mask for the overscan region
-  const fullW = wmW + overscanX * 2;
-  const fullH = wmH + overscanY * 2;
-  const featherX = Math.max(8, Math.round(fullW * 0.25));
-  const featherY = Math.max(8, Math.round(fullH * 0.25));
-  const maskPng = await createFeatherMaskPng(fullW, fullH, featherX, featherY);
+  // 8. Run MI-GAN inference
+  const session = await getSession();
+  const feeds: Record<string, ort.Tensor> = {};
+  feeds[session.inputNames[0]] = new ort.Tensor("uint8", chw, [1, 3, cropH, cropW]);
+  feeds[session.inputNames[1]] = new ort.Tensor("uint8", modelMask, [1, 1, cropH, cropW]);
+  const results = await session.run(feeds);
+  const result = results[session.outputNames[0]].data as Uint8Array;
 
-  // Create the full-size solid fill with noise
-  const fullSolidSvg = `<svg width="${fullW}" height="${fullH}">
-    <defs>
-      <filter id="n">
-        <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/>
-        <feColorMatrix type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.08 0"/>
-        <feComposite in2="SourceGraphic" operator="atop"/>
-      </filter>
-    </defs>
-    <rect width="${fullW}" height="${fullH}" fill="rgb(${avgR},${avgG},${avgB})"/>
-    <rect width="${fullW}" height="${fullH}" fill="rgb(${avgR},${avgG},${avgB})" filter="url(#n)"/>
-  </svg>`;
+  // 9. Feathered paste-back
+  const alpha = blurMask(dilated, cropW, cropH, r);
+  for (let i = 0; i < cropSize; i++) {
+    const a = dilated[i] ? 255 : alpha[i];
+    if (a === 0) continue;
+    if (a === 255) {
+      rgba[i * 4] = result[i];
+      rgba[i * 4 + 1] = result[cropSize + i];
+      rgba[i * 4 + 2] = result[2 * cropSize + i];
+    } else {
+      const inv = 255 - a;
+      rgba[i * 4] = (result[i] * a + rgba[i * 4] * inv + 127) / 255;
+      rgba[i * 4 + 1] = (result[cropSize + i] * a + rgba[i * 4 + 1] * inv + 127) / 255;
+      rgba[i * 4 + 2] = (result[2 * cropSize + i] * a + rgba[i * 4 + 2] * inv + 127) / 255;
+    }
+  }
 
-  const fullSolid = await sharp(Buffer.from(fullSolidSvg))
-    .blur(8)
-    .toBuffer();
+  // 10. Composite the inpainted crop back onto the original
+  const cropImage = sharp(rgba, {
+    raw: { width: cropW, height: cropH, channels: 4 },
+  }).png();
 
-  // Apply the feathered alpha mask
-  const solidMeta = await sharp(fullSolid).metadata();
-  const patchWithAlpha =
-    solidMeta.channels === 4
-      ? await sharp(fullSolid).removeAlpha().joinChannel(maskPng).png().toBuffer()
-      : await sharp(fullSolid).joinChannel(maskPng).png().toBuffer();
-
-  // Composite over the original
   return sharp(inputBuf)
     .composite([
       {
-        input: patchWithAlpha,
-        top: compY,
-        left: compX,
+        input: await cropImage.toBuffer(),
+        top: crop.y,
+        left: crop.x,
         blend: "over",
       },
     ])
-    .toFormat(meta_format(inputBuf), { quality: 92 })
+    .png()
     .toBuffer();
-}
-
-/** Composite a patch over the original image with a feathered alpha mask. */
-async function compositeWithMask(
-  originalBuf: Buffer,
-  patchBuf: Buffer,
-  patchX: number,
-  patchY: number,
-  patchW: number,
-  patchH: number,
-): Promise<Buffer> {
-  const featherX = Math.max(4, Math.round(patchW * FEATHER));
-  const featherY = Math.max(4, Math.round(patchH * FEATHER));
-  const maskPng = await createFeatherMaskPng(patchW, patchH, featherX, featherY);
-
-  const patchMeta = await sharp(patchBuf).metadata();
-  const patchWithAlpha =
-    patchMeta.channels === 4
-      ? await sharp(patchBuf).removeAlpha().joinChannel(maskPng).png().toBuffer()
-      : await sharp(patchBuf).joinChannel(maskPng).png().toBuffer();
-
-  return sharp(originalBuf)
-    .composite([
-      {
-        input: patchWithAlpha,
-        top: patchY,
-        left: patchX,
-        blend: "over",
-      },
-    ])
-    .toFormat(meta_format(originalBuf), { quality: 92 })
-    .toBuffer();
-}
-
-/** Detect the format of the input buffer. */
-function meta_format(buf: Buffer): keyof sharp.FormatEnum {
-  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
-    return "jpeg";
-  }
-  if (buf.length >= 8 && buf.slice(0, 8).toString("hex") === "89504e470d0a1a0a") {
-    return "png";
-  }
-  if (
-    buf.length >= 12 &&
-    buf.slice(0, 4).toString("ascii") === "RIFF" &&
-    buf.slice(8, 12).toString("ascii") === "WEBP"
-  ) {
-    return "webp";
-  }
-  return "png";
-}
-
-/** Create a feathered alpha mask as a single-channel PNG. */
-async function createFeatherMaskPng(
-  w: number,
-  h: number,
-  featherX: number,
-  featherY: number,
-): Promise<Buffer> {
-  const innerX = featherX;
-  const innerY = featherY;
-  const innerW = Math.max(1, w - featherX * 2);
-  const innerH = Math.max(1, h - featherY * 2);
-  const blurR = Math.max(featherX, featherY, 2);
-
-  const svg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <filter id="f" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="${blurR}"/>
-    </filter>
-  </defs>
-  <rect width="${w}" height="${h}" fill="black"/>
-  <rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" fill="white" filter="url(#f)"/>
-</svg>`;
-
-  const maskRaw = await sharp(Buffer.from(svg))
-    .greyscale()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  let singleChannel: Buffer;
-  if (maskRaw.info.channels === 1) {
-    singleChannel = maskRaw.data;
-  } else {
-    singleChannel = Buffer.alloc(maskRaw.data.length / maskRaw.info.channels);
-    for (let i = 0; i < singleChannel.length; i++) {
-      singleChannel[i] = maskRaw.data[i * maskRaw.info.channels];
-    }
-  }
-
-  return sharp(singleChannel, {
-    raw: { width: w, height: h, channels: 1 },
-  }).png().toBuffer();
 }
 
 export function hasWatermarkModel(): boolean {
-  return true;
+  return fs.existsSync(MODEL_PATH);
 }
 
 export async function preloadWatermarkModel(): Promise<void> {
-  // No-op
+  await getSession();
 }

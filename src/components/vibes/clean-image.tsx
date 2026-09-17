@@ -19,6 +19,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { removeWatermarkWithMigan } from '@/lib/watermark/migan-client'
 import { removeWatermarkWithOpenCV } from '@/lib/watermark/opencv-client'
 
 // In-memory cache: raw URL → cleaned blob URL (per browser session).
@@ -58,7 +59,18 @@ async function cleanImageUrl(rawUrl: string): Promise<string> {
   }
 
   try {
-    // Strategy 1: OpenCV.js client-side inpainting (best quality)
+    // Strategy 1: MI-GAN neural network inpainting (BEST — same as watermark-remover app)
+    const miganResult = await removeWatermarkWithMigan(rawUrl)
+    if (miganResult !== rawUrl) {
+      cache.set(rawUrl, miganResult)
+      return miganResult
+    }
+  } catch {
+    // MI-GAN failed — try OpenCV fallback
+  }
+
+  try {
+    // Strategy 2: OpenCV.js client-side inpainting (Telea algorithm)
     const cvResult = await removeWatermarkWithOpenCV(rawUrl)
     if (cvResult !== rawUrl) {
       cache.set(rawUrl, cvResult)
