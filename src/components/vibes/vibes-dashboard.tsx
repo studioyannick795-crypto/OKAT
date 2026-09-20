@@ -1052,6 +1052,16 @@ function VideoGenerateCard({ projects, onProjectCreated }: { projects: Project[]
     }
   }
 
+  // Auto-poll: when a batch is started but not complete, poll every 5s
+  useEffect(() => {
+    const done = batch?.content?.filter((c) => c.videoUrl).length || 0
+    const total = batch?.content?.length || 0
+    const isDone = batch?.isComplete || (total > 0 && done >= total)
+    if (!batch?.id || isDone || batch.hasError || polling || submitting) return
+    const timer = setTimeout(() => { handlePoll() }, 5000)
+    return () => clearTimeout(timer)
+  }, [batch?.id, batch?.isComplete, batch?.content, batch?.hasError, polling, submitting])
+
   const done = batch?.content?.filter((c) => c.videoUrl).length || 0
   const total = batch?.content?.length || 0
   const progress = total > 0 ? Math.round((done / total) * 100) : batch?.isComplete ? 100 : 0
@@ -1962,6 +1972,16 @@ function ImageToVideoCard({ projects, onProjectCreated }: { projects: Project[];
     }
   }
 
+  // Auto-poll: when a batch is started but not complete, poll every 5s
+  useEffect(() => {
+    const done = batch?.content?.filter((c) => c.videoUrl).length || 0
+    const total = batch?.content?.length || 0
+    const isDone = batch?.isComplete || (total > 0 && done >= total)
+    if (!batch?.id || isDone || batch.hasError || polling || submitting) return
+    const timer = setTimeout(() => { handlePoll() }, 5000)
+    return () => clearTimeout(timer)
+  }, [batch?.id, batch?.isComplete, batch?.content, batch?.hasError, polling, submitting])
+
   const done = batch?.content?.filter((c) => c.videoUrl).length || 0
   const total = batch?.content?.length || 0
   const progress = total > 0 ? Math.round((done / total) * 100) : batch?.isComplete ? 100 : 0
@@ -2400,6 +2420,16 @@ function StartEndFrameVideoCard({ projects, onProjectCreated }: { projects: Proj
       setPolling(false)
     }
   }
+
+  // Auto-poll: when a batch is started but not complete, poll every 5s
+  useEffect(() => {
+    const done = batch?.content?.filter((c) => c.videoUrl).length || 0
+    const total = batch?.content?.length || 0
+    const isDone = batch?.isComplete || (total > 0 && done >= total)
+    if (!batch?.id || isDone || batch.hasError || polling || submitting) return
+    const timer = setTimeout(() => { handlePoll() }, 5000)
+    return () => clearTimeout(timer)
+  }, [batch?.id, batch?.isComplete, batch?.content, batch?.hasError, polling, submitting])
 
   const done = batch?.content?.filter((c) => c.videoUrl).length || 0
   const total = batch?.content?.length || 0
