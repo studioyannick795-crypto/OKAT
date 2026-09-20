@@ -6,10 +6,14 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "50mb",
+    },
+  },
   async headers() {
     return [
       {
-        // Cache OpenCV.js (13MB) aggressively — it never changes
         source: "/opencv.js",
         headers: [
           {
