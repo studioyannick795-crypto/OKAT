@@ -1539,7 +1539,7 @@ function ImageEditCard({ projects, onProjectCreated }: { projects: Project[]; on
       // which is why direct editing of base64-uploaded images was impossible.
       // Upload via base64 JSON (avoids Caddy 413 multipart limit)
       const arrayBuffer = await file.arrayBuffer()
-      const b64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
+      const b64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''))
       const res = await fetch('/api/vibes/upload/media', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
