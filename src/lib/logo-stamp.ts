@@ -3,7 +3,7 @@ import sharp from "sharp";
 export const LOGO_CONFIG = {
   enabled: true,
   opacity: 0.40,
-  sizeScale: 1.40,
+  sizeScale: 0.60,
   viewBox: "0 0 497 502",
   aspectRatio: "497/502 (~1:1)",
   color: "#ffffff",
