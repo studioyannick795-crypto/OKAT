@@ -44,9 +44,7 @@ export async function POST(request: NextRequest) {
 
     // Step 1: Remove watermark from the uploaded image (Optix inpainting)
     try {
-      buffer = await inpaintWatermarkOptix(buffer, {
-        xmin: 870, ymin: 940, xmax: 970, ymax: 980,
-      });
+      buffer = await inpaintWatermarkOptix(buffer);
     } catch (wmErr: any) {
       console.error("[upload] watermark removal failed:", wmErr?.message);
       // Continue with original image if removal fails

@@ -54,10 +54,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Use Optix inpainting (auto-detects watermark strokes, no ratio needed)
-    const cleaned = await inpaintWatermarkOptix(imageBuffer, {
-      xmin: 870, ymin: 940, xmax: 970, ymax: 980,
-    });
+    // Use Optix inpainting (auto-detects ratio from image dimensions)
+    const cleaned = await inpaintWatermarkOptix(imageBuffer);
 
     return new Response(cleaned, {
       status: 200,

@@ -61,9 +61,7 @@ export async function POST(request: NextRequest) {
         if (imgResp.ok) {
           const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
 
-          const cleaned = await inpaintWatermarkOptix(imgBuffer, {
-            xmin: 870, ymin: 940, xmax: 970, ymax: 980,
-          });
+          const cleaned = await inpaintWatermarkOptix(imgBuffer);
 
           const b64 = cleaned.toString("base64");
           result.contentItem.imageUrl = `data:image/png;base64,${b64}`;

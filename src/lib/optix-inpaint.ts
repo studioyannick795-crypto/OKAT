@@ -55,22 +55,33 @@ function luminance(r: number, g: number, b: number): number {
  * Inpaint watermark using Fast Marching Radial algorithm.
  *
  * @param imageBuffer Source image buffer
- * @param box Watermark bounding box (0-1000 normalized)
+ * @param box Watermark bounding box (0-1000 normalized). If not provided,
+ *            auto-detected from image dimensions.
  * @returns Cleaned image buffer (PNG)
  */
 export async function inpaintWatermarkOptix(
   imageBuffer: Buffer,
-  box: WatermarkBox,
+  box?: WatermarkBox,
 ): Promise<Buffer> {
   const { data: fullData, width: w, height: h } = await decodeImage(imageBuffer);
 
-  // Default watermark box if not provided (bottom-right corner)
-  const curBox = box || {
-    xmin: 870,
-    ymin: 940,
-    xmax: 970,
-    ymax: 980,
-  };
+  // Auto-detect watermark zone from image dimensions if not provided
+  let curBox: WatermarkBox;
+  if (box) {
+    curBox = box;
+  } else {
+    const ratio = w / h;
+    if (ratio > 1.4) {
+      // 16:9 landscape — watermark zone: xmin=870, ymin=900, xmax=970, ymax=960
+      curBox = { xmin: 870, ymin: 900, xmax: 970, ymax: 960 };
+    } else if (ratio < 0.75) {
+      // 9:16 portrait — watermark zone: xmin=860, ymin=970, xmax=980, ymax=990
+      curBox = { xmin: 860, ymin: 970, xmax: 980, ymax: 990 };
+    } else {
+      // 1:1 square (default) — watermark zone: xmin=870, ymin=940, xmax=970, ymax=980
+      curBox = { xmin: 870, ymin: 940, xmax: 970, ymax: 980 };
+    }
+  }
 
   // Generous bounding box with margin
   const margin = 5;
