@@ -1034,7 +1034,7 @@ function VideoGenerateCard({ projects, onProjectCreated }: { projects: Project[]
     setPolling(true)
     try {
       const updated = await vibesFetch<Batch>(
-        `/api/vibes/batches/${batch.id}/poll?timeout=180`,
+        `/api/vibes/batches/${batch.id}/poll?timeout=5`,
         { method: 'POST' },
       )
       setBatch(updated)
@@ -1042,8 +1042,6 @@ function VideoGenerateCard({ projects, onProjectCreated }: { projects: Project[]
         toast.error(updated.error || 'Batch failed')
       } else if (updated.isComplete) {
         toast.success(`Batch complete — ${updated.content?.length || 0} variations ready`)
-      } else {
-        toast.info('Still processing — click poll again to keep waiting')
       }
     } catch (e: any) {
       toast.error(e?.message || 'Polling failed')
