@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getVibesClient, hasVibesCookie } from "@/lib/vibes/server";
-import { inpaintWatermarkOptix } from "@/lib/optix-inpaint";
-import { stampLogo } from "@/lib/logo-stamp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,8 +28,7 @@ function handleError(error: any) {
  *
  * Body: { source_image_ent_id, edit_prompt, project_id? }
  *
- * 1. Edit the image via vibes.ai
- * 2. Apply Optix watermark removal to the RESULT (edited image)
+ * Edits the image via vibes.ai — no watermark removal, no logo.
  */
 export async function POST(request: NextRequest) {
   if (!hasVibesCookie()) return notConfigured();
@@ -46,39 +43,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Step 1: Edit the image
     const result = await client.editImage({
       sourceImageEntId: body.source_image_ent_id,
       editPrompt: body.edit_prompt,
       projectId: body.project_id,
     });
-
-    // Step 2: Apply watermark removal to the RESULT (edited image)
-    if (result?.success !== false && result?.contentItem?.imageUrl) {
-      try {
-        const imgResp = await fetch(result.contentItem.imageUrl, {
-          signal: AbortSignal.timeout(60000),
-        });
-        if (imgResp.ok) {
-          const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
-
-          let cleaned = await inpaintWatermarkOptix(imgBuffer);
-
-          // Stamp the Nelth-IA logo
-          try {
-            cleaned = await stampLogo(cleaned);
-          } catch (e: any) {
-            console.error("[edit] logo stamp failed:", e?.message);
-          }
-
-          const b64 = cleaned.toString("base64");
-          result.contentItem.imageUrl = `data:image/png;base64,${b64}`;
-          result.contentItem.watermarkRemoved = true;
-        }
-      } catch (wmErr: any) {
-        console.error("[edit] watermark removal failed:", wmErr?.message);
-      }
-    }
 
     return NextResponse.json(result);
   } catch (error: any) {
