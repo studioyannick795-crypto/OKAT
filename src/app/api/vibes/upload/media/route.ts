@@ -55,10 +55,7 @@ export async function POST(request: NextRequest) {
 
     // Step 2: Upload to vibes.ai via base64 endpoint
     const b64 = buffer.toString("base64");
-    const uploadResp = await client.uploadImage({
-      image_base64: b64,
-      filename,
-    });
+    const uploadResp = await client.uploadImage(b64);
 
     if (!uploadResp?.mediaEntId) {
       return NextResponse.json(
