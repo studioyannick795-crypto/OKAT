@@ -1217,19 +1217,18 @@ function VideoGenerateCard({ projects, onProjectCreated }: { projects: Project[]
 
 function VideoVariationCard({ item }: { item: BatchContentItem }) {
   const ready = !!item.videoUrl
-  const cleanPoster = useCleanImage(item.thumbnailUrl)
   return (
     <div className="overflow-hidden rounded-lg border bg-card">
       {ready ? (
         <video
           src={item.videoUrl}
-          poster={cleanPoster}
+          poster={item.thumbnailUrl}
           controls
           playsInline
           className="aspect-video w-full bg-black object-contain"
         />
       ) : item.thumbnailUrl ? (
-        <CleanImage src={item.thumbnailUrl} alt="" className="aspect-video w-full object-cover" loading="lazy" />
+        <img src={item.thumbnailUrl} alt="" className="aspect-video w-full object-cover" loading="lazy" />
       ) : (
         <div className="flex aspect-video w-full items-center justify-center bg-muted">
           {item.isLoading ? <Spinner className="size-6 text-muted-foreground" /> : <ImageIcon className="size-6 text-muted-foreground" />}
@@ -2781,20 +2780,22 @@ function MediaSection() {
 
 function MediaCard({ item }: { item: MediaItem }) {
   const isVideo = item.type === 'video'
-  const cleanPoster = useCleanImage(item.thumbnailUrl)
+  const imageUrl = item.imageUrl || item.fullUrl || item.thumbnailUrl || ''
+  const cleanUrl = useCleanImage(isVideo ? undefined : imageUrl)
+  const cleanPoster = useCleanImage(isVideo ? undefined : item.thumbnailUrl)
   return (
     <Card className="overflow-hidden transition-shadow hover:shadow-md">
       {isVideo ? (
         item.videoUrl ? (
           <video
             src={item.videoUrl}
-            poster={cleanPoster}
+            poster={item.thumbnailUrl}
             controls
             playsInline
             className="aspect-square w-full bg-black object-contain"
           />
         ) : item.thumbnailUrl ? (
-          <CleanImage src={item.thumbnailUrl} alt="" className="aspect-square w-full object-cover" loading="lazy" />
+          <img src={item.thumbnailUrl} alt="" className="aspect-square w-full object-cover" loading="lazy" />
         ) : (
           <div className="flex aspect-square w-full items-center justify-center bg-muted">
             <Film className="size-8 text-muted-foreground" />
