@@ -46,12 +46,8 @@ export async function POST(request: NextRequest) {
       : imageBase64;
     let buffer = Buffer.from(cleanB64, "base64");
 
-    // Step 1: Remove watermark (Optix inpainting)
-    try {
-      buffer = await inpaintWatermarkOptix(buffer);
-    } catch (wmErr: any) {
-      console.error("[upload] watermark removal failed:", wmErr?.message);
-    }
+    // Step 1: Skip watermark removal on upload (user's own image, no Meta AI watermark)
+    // Also avoids converting JPEG→PNG which bloats the base64 size
 
     // Step 2: Upload to vibes.ai via base64 endpoint
     const b64 = buffer.toString("base64");
