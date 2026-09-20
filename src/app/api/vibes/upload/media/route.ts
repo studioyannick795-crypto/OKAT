@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getVibesClient, hasVibesCookie } from "@/lib/vibes/server";
+import { inpaintWatermarkOptix } from "@/lib/optix-inpaint";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +17,10 @@ function notConfigured() {
  * POST /api/vibes/upload/media
  *
  * Multipart form: file + filename + project_id
+ *
+ * 1. Remove watermark from the uploaded image (Optix inpainting)
+ * 2. Upload the cleaned image to vibes.ai
+ * 3. Register in project
  */
 export async function POST(request: NextRequest) {
   if (!hasVibesCookie()) return notConfigured();
@@ -35,8 +40,19 @@ export async function POST(request: NextRequest) {
     }
 
     const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    let buffer = Buffer.from(arrayBuffer);
 
+    // Step 1: Remove watermark from the uploaded image (Optix inpainting)
+    try {
+      buffer = await inpaintWatermarkOptix(buffer, {
+        xmin: 870, ymin: 940, xmax: 970, ymax: 980,
+      });
+    } catch (wmErr: any) {
+      console.error("[upload] watermark removal failed:", wmErr?.message);
+      // Continue with original image if removal fails
+    }
+
+    // Step 2: Upload the cleaned image to vibes.ai
     const vibesForm = new FormData();
     const blob = new Blob([buffer], { type: file.type });
     vibesForm.append("file", blob, filename || file.name || "upload.jpg");
@@ -50,6 +66,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Step 3: Register in project
     let sourceImageEntId = uploadResp.mediaEntId;
     let registered = false;
 
@@ -77,6 +94,7 @@ export async function POST(request: NextRequest) {
       imageUrl: uploadResp.cdnUrl || uploadResp.imageUrl || "",
       uploadToken: uploadResp.uploadToken,
       registered,
+      watermarkRemoved: true,
     });
   } catch (error: any) {
     console.error("[upload] error:", error);

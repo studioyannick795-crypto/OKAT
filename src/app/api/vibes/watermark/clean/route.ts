@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
-import { removeWatermarks } from "@/lib/watermarkPipeline";
+import { inpaintWatermarkOptix } from "@/lib/optix-inpaint";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,10 +9,10 @@ export const maxDuration = 120;
 /**
  * POST /api/vibes/watermark/clean
  *
- * 100% LOCAL backend (no external API call).
- * Uses the remove-ai backend code (watermarkPipeline.ts) directly.
+ * Uses the Optix inpainting algorithm (Fast Marching Radial).
+ * 100% local — no external API.
  *
- * Body: { image_url: string, ratio: string }
+ * Body: { image_url: string, ratio?: string }
  */
 export async function POST(request: NextRequest) {
   try {
@@ -54,36 +54,19 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const ratio = body.ratio || "1:1";
-
-    const result = await removeWatermarks(imageBuffer, {
-      ratio,
-      exportFormat: "png",
-      maskConfig: {
-        thresholdMode: "otsu",
-        sensitivity: 75,
-        dilationRadius: 2,
-        invertMask: false,
-      },
-      inpaintConfig: {
-        algorithm: "telea",
-        radius: 5,
-      },
+    // Use Optix inpainting (auto-detects watermark strokes, no ratio needed)
+    const cleaned = await inpaintWatermarkOptix(imageBuffer, {
+      xmin: 870, ymin: 940, xmax: 970, ymax: 980,
     });
 
-    return new Response(result.imageBuffer, {
+    return new Response(cleaned, {
       status: 200,
       headers: {
-        "Content-Type": result.mimeType,
-        "Content-Length": String(result.imageBuffer.byteLength),
+        "Content-Type": "image/png",
+        "Content-Length": String(cleaned.byteLength),
         "Cache-Control": "no-store",
         "X-Watermark-Removed": "true",
-        "X-Method": "local-backend",
-        "X-Ratio": ratio,
-        "X-Detection-Source": result.metrics.detectionSource,
-        "X-Inpaint-Engine": result.metrics.engineUsed,
-        "X-Inpaint-Time-Ms": String(result.metrics.totalTimeMs),
-        "X-Pixels-Inpainted": String(result.metrics.pixelsInpainted),
+        "X-Method": "optix-inpainting",
       },
     });
   } catch (error: any) {
@@ -93,5 +76,5 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
-  return NextResponse.json({ service: "local-backend", method: "watermarkPipeline" });
+  return NextResponse.json({ service: "optix-inpainting", method: "fast-marching-radial" });
 }
