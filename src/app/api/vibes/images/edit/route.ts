@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getVibesClient, hasVibesCookie } from "@/lib/vibes/server";
+import { inpaintWatermarkOptix } from "@/lib/optix-inpaint";
+import { stampLogo } from "@/lib/logo-stamp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,7 +30,9 @@ function handleError(error: any) {
  *
  * Body: { source_image_ent_id, edit_prompt, project_id? }
  *
- * Edits the image via vibes.ai — no watermark removal, no logo.
+ * 1. Edit image via vibes.ai
+ * 2. Remove watermark (Optix inpainting)
+ * 3. Stamp Nelth-IA logo
  */
 export async function POST(request: NextRequest) {
   if (!hasVibesCookie()) return notConfigured();
@@ -43,11 +47,36 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Step 1: Edit the image
     const result = await client.editImage({
       sourceImageEntId: body.source_image_ent_id,
       editPrompt: body.edit_prompt,
       projectId: body.project_id,
     });
+
+    // Step 2: Remove watermark + Step 3: Stamp logo
+    if (result?.success !== false && result?.contentItem?.imageUrl) {
+      try {
+        const imgResp = await fetch(result.contentItem.imageUrl, {
+          signal: AbortSignal.timeout(60000),
+        });
+        if (imgResp.ok) {
+          let buffer = Buffer.from(await imgResp.arrayBuffer());
+
+          // Remove watermark (Optix, auto-detects ratio)
+          buffer = await inpaintWatermarkOptix(buffer);
+
+          // Stamp the Nelth-IA logo
+          buffer = await stampLogo(buffer);
+
+          const b64 = buffer.toString("base64");
+          result.contentItem.imageUrl = `data:image/png;base64,${b64}`;
+          result.contentItem.watermarkRemoved = true;
+        }
+      } catch (wmErr: any) {
+        console.error("[edit] watermark/logo failed:", wmErr?.message);
+      }
+    }
 
     return NextResponse.json(result);
   } catch (error: any) {
