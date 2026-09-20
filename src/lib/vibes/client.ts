@@ -710,12 +710,22 @@ export class VibesClient {
     const maxRetries = opts?.maxRetries ?? 3;
     const deadline = Date.now() + timeout * 1000;
     let consecutiveErrors = 0;
+    let lastBatch: any = null;
 
     while (Date.now() < deadline) {
       try {
         const batch = await this.getBatch(batchId);
         consecutiveErrors = 0;
-        if (batch.isComplete || batch.hasError) return batch;
+        lastBatch = batch;
+        // Force isComplete if all content items have videoUrl
+        const content = batch.content ?? [];
+        const done = content.filter((c: any) => c.videoUrl).length;
+        if (batch.isComplete || batch.hasError || (content.length > 0 && done >= content.length)) {
+          if (!batch.isComplete && content.length > 0 && done >= content.length) {
+            batch.isComplete = true;
+          }
+          return batch;
+        }
       } catch (e) {
         consecutiveErrors++;
         if (consecutiveErrors > maxRetries) throw e;
@@ -723,7 +733,9 @@ export class VibesClient {
       }
       await sleep(interval * 1000);
     }
-    throw new Error(`Batch ${batchId} did not complete within ${timeout}s`);
+    // Timeout: return the last known state instead of throwing
+    if (lastBatch) return lastBatch;
+    return this.getBatch(batchId);
   }
 
   // ------------------------------------------------------------------ //
