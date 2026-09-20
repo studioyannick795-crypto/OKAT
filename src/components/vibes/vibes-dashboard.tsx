@@ -1539,14 +1539,17 @@ function ImageEditCard({ projects, onProjectCreated }: { projects: Project[]; on
       //
       // The base64 /api/upload-image endpoint does NOT return an uploadToken,
       // which is why direct editing of base64-uploaded images was impossible.
-      const formData = new FormData()
-      formData.set('file', file, file.name)
-      formData.set('filename', file.name)
-      formData.set('project_id', projectId)
-
+      // Upload via base64 JSON (avoids Caddy 413 multipart limit)
+      const arrayBuffer = await file.arrayBuffer()
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
       const res = await fetch('/api/vibes/upload/media', {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_base64: `data:${file.type};base64,${b64}`,
+          filename: file.name,
+          project_id: projectId,
+        }),
       })
       if (!res.ok) {
         const errText = await res.text().catch(() => '')
@@ -2241,16 +2244,17 @@ function StartEndFrameVideoCard({ projects, onProjectCreated }: { projects: Proj
       toast.error('Select or create a project first')
       return null
     }
-    // Use the multipart upload-media endpoint which returns an uploadToken
-    // and registers the image in the project, making it valid for i2v generation.
-    const formData = new FormData()
-    formData.set('file', file, file.name)
-    formData.set('filename', file.name)
-    formData.set('project_id', projectId)
-
+    // Upload via base64 JSON (avoids Caddy 413 multipart limit)
+    const arrayBuffer = await file.arrayBuffer()
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
     const res = await fetch('/api/vibes/upload/media', {
       method: 'POST',
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_base64: `data:${file.type};base64,${b64}`,
+        filename: file.name,
+        project_id: projectId,
+      }),
     })
     if (!res.ok) {
       const errText = await res.text().catch(() => '')

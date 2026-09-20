@@ -16,46 +16,49 @@ function notConfigured() {
 /**
  * POST /api/vibes/upload/media
  *
- * Multipart form: file + filename + project_id
+ * Accepts JSON (not multipart) to avoid Caddy 413 body size limit:
+ * { image_base64: string, filename: string, project_id: string }
  *
- * 1. Remove watermark from the uploaded image (Optix inpainting)
- * 2. Upload the cleaned image to vibes.ai
- * 3. Register in project
+ * 1. Remove watermark from uploaded image (Optix)
+ * 2. Upload to vibes.ai via client.uploadImage() (base64)
+ * 3. Register in project via bulkUploadToProject
  */
 export async function POST(request: NextRequest) {
   if (!hasVibesCookie()) return notConfigured();
   try {
     const client = getVibesClient();
-    const formData = await request.formData();
+    const body = await request.json();
 
-    const file = formData.get("file") as File | null;
-    const filename = formData.get("filename") as string | null;
-    const projectId = formData.get("project_id") as string | null;
+    const imageBase64 = body?.image_base64;
+    const filename = body?.filename || "upload.jpg";
+    const projectId = body?.project_id;
 
-    if (!file) {
+    if (!imageBase64) {
       return NextResponse.json(
-        { error: "Missing 'file' in form data" },
+        { error: "Missing image_base64 in body" },
         { status: 400 },
       );
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    let buffer = Buffer.from(arrayBuffer);
+    // Strip data URL prefix
+    const cleanB64 = imageBase64.includes(",")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
+    let buffer = Buffer.from(cleanB64, "base64");
 
-    // Step 1: Remove watermark from the uploaded image (Optix inpainting)
+    // Step 1: Remove watermark (Optix inpainting)
     try {
       buffer = await inpaintWatermarkOptix(buffer);
     } catch (wmErr: any) {
       console.error("[upload] watermark removal failed:", wmErr?.message);
-      // Continue with original image if removal fails
     }
 
-    // Step 2: Upload the cleaned image to vibes.ai
-    const vibesForm = new FormData();
-    const blob = new Blob([buffer], { type: file.type });
-    vibesForm.append("file", blob, filename || file.name || "upload.jpg");
-
-    const uploadResp = await client.uploadMedia(vibesForm as any);
+    // Step 2: Upload to vibes.ai via base64 endpoint
+    const b64 = buffer.toString("base64");
+    const uploadResp = await client.uploadImage({
+      image_base64: b64,
+      filename,
+    });
 
     if (!uploadResp?.mediaEntId) {
       return NextResponse.json(
@@ -64,7 +67,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Step 3: Register in project
+    // Step 3: Register in project if projectId provided
     let sourceImageEntId = uploadResp.mediaEntId;
     let registered = false;
 
@@ -73,9 +76,9 @@ export async function POST(request: NextRequest) {
         const regResp = await client.bulkUploadToProject(projectId, [
           {
             mediaEntId: uploadResp.mediaEntId,
-            uploadToken: uploadResp.uploadToken,
-            cdnUrl: uploadResp.cdnUrl || uploadResp.imageUrl,
-            filename: filename || file.name || "upload.jpg",
+            uploadToken: uploadResp.uploadToken || "",
+            cdnUrl: uploadResp.imageUrl || uploadResp.cdnUrl || "",
+            filename,
           },
         ]);
         if (regResp?.success) {
@@ -89,8 +92,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       mediaEntId: uploadResp.mediaEntId,
       sourceImageEntId,
-      imageUrl: uploadResp.cdnUrl || uploadResp.imageUrl || "",
-      uploadToken: uploadResp.uploadToken,
+      imageUrl: uploadResp.imageUrl || uploadResp.cdnUrl || "",
+      uploadToken: uploadResp.uploadToken || "",
       registered,
       watermarkRemoved: true,
     });
