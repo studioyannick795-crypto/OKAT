@@ -1761,7 +1761,7 @@ function ImageEditCard({ projects, onProjectCreated }: { projects: Project[]; on
           ) : result.contentItem?.imageUrl ? (
             <div className="overflow-hidden rounded-lg border bg-card">
               <a href={result.contentItem.imageUrl} target="_blank" rel="noopener noreferrer">
-                <CleanImage
+                <img
                   src={result.contentItem.imageUrl}
                   alt={result.contentItem.prompt || 'Edited image'}
                   className="aspect-square w-full object-cover transition-transform hover:scale-105"
