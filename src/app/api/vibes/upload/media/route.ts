@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import sharp from "sharp";
 import { getVibesClient, hasVibesCookie } from "@/lib/vibes/server";
-import { inpaintWatermarkOptix } from "@/lib/optix-inpaint";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,12 +16,11 @@ function notConfigured() {
 /**
  * POST /api/vibes/upload/media
  *
- * Accepts JSON (not multipart) to avoid Caddy 413 body size limit:
- * { image_base64: string, filename: string, project_id: string }
+ * Accepts JSON: { image_base64, filename, project_id }
  *
- * 1. Remove watermark from uploaded image (Optix)
- * 2. Upload to vibes.ai via client.uploadImage() (base64)
- * 3. Register in project via bulkUploadToProject
+ * 1. Compress image to JPEG (reduces base64 size for Vercel)
+ * 2. Upload to vibes.ai via client.uploadImage()
+ * 3. Register in project
  */
 export async function POST(request: NextRequest) {
   if (!hasVibesCookie()) return notConfigured();
@@ -46,10 +45,16 @@ export async function POST(request: NextRequest) {
       : imageBase64;
     let buffer = Buffer.from(cleanB64, "base64");
 
-    // Step 1: Skip watermark removal on upload (user's own image, no Meta AI watermark)
-    // Also avoids converting JPEG→PNG which bloats the base64 size
+    // Compress to JPEG to reduce base64 size (avoids Vercel 4.5MB body limit)
+    try {
+      buffer = await sharp(buffer)
+        .jpeg({ quality: 85, mozjpeg: true })
+        .toBuffer();
+    } catch {
+      // If compression fails, use original
+    }
 
-    // Step 2: Upload to vibes.ai via base64 endpoint
+    // Upload to vibes.ai
     const b64 = buffer.toString("base64");
     const uploadResp = await client.uploadImage(b64);
 
@@ -60,7 +65,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Step 3: Register in project if projectId provided
+    // Register in project
     let sourceImageEntId = uploadResp.mediaEntId;
     let registered = false;
 
@@ -88,7 +93,6 @@ export async function POST(request: NextRequest) {
       imageUrl: uploadResp.imageUrl || uploadResp.cdnUrl || "",
       uploadToken: uploadResp.uploadToken || "",
       registered,
-      watermarkRemoved: true,
     });
   } catch (error: any) {
     console.error("[upload] error:", error);
