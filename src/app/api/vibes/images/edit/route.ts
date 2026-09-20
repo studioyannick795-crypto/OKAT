@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getVibesClient, hasVibesCookie } from "@/lib/vibes/server";
 import { inpaintWatermarkOptix } from "@/lib/optix-inpaint";
+import { stampLogo } from "@/lib/logo-stamp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,7 +62,14 @@ export async function POST(request: NextRequest) {
         if (imgResp.ok) {
           const imgBuffer = Buffer.from(await imgResp.arrayBuffer());
 
-          const cleaned = await inpaintWatermarkOptix(imgBuffer);
+          let cleaned = await inpaintWatermarkOptix(imgBuffer);
+
+          // Stamp the Nelth-IA logo
+          try {
+            cleaned = await stampLogo(cleaned);
+          } catch (e: any) {
+            console.error("[edit] logo stamp failed:", e?.message);
+          }
 
           const b64 = cleaned.toString("base64");
           result.contentItem.imageUrl = `data:image/png;base64,${b64}`;

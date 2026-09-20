@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getVibesClient, hasVibesCookie } from "@/lib/vibes/server";
 import { inpaintWatermarkOptix } from "@/lib/optix-inpaint";
+import { stampLogo } from "@/lib/logo-stamp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,6 +46,8 @@ export async function POST(request: NextRequest) {
     // Step 1: Remove watermark from the uploaded image (Optix inpainting)
     try {
       buffer = await inpaintWatermarkOptix(buffer);
+      // Stamp the Nelth-IA logo
+      buffer = await stampLogo(buffer);
     } catch (wmErr: any) {
       console.error("[upload] watermark removal failed:", wmErr?.message);
       // Continue with original image if removal fails

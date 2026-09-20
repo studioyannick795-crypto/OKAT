@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
 import { inpaintWatermarkOptix } from "@/lib/optix-inpaint";
+import { stampLogo } from "@/lib/logo-stamp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,7 +56,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Use Optix inpainting (auto-detects ratio from image dimensions)
-    const cleaned = await inpaintWatermarkOptix(imageBuffer);
+    let cleaned = await inpaintWatermarkOptix(imageBuffer);
+
+    // Stamp the Nelth-IA logo
+    try {
+      cleaned = await stampLogo(cleaned);
+    } catch (e: any) {
+      console.error("[watermark] logo stamp failed:", e?.message);
+    }
 
     return new Response(cleaned, {
       status: 200,
