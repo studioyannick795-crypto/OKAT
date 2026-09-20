@@ -16,11 +16,12 @@ function notConfigured() {
 /**
  * POST /api/vibes/upload/media
  *
- * Accepts JSON: { image_base64, filename, project_id }
+ * Accepts JSON (from frontend): { image_base64, filename, project_id }
+ * Sends multipart to vibes.ai (backend → vibes.ai, no size limit)
  *
- * 1. Compress image to JPEG (reduces base64 size for Vercel)
- * 2. Upload to vibes.ai via client.uploadImage()
- * 3. Register in project
+ * 1. Compress image to JPEG
+ * 2. Upload via /api/upload-media (multipart — returns uploadToken!)
+ * 3. Register in project via bulkUploadToProject (needs uploadToken)
  */
 export async function POST(request: NextRequest) {
   if (!hasVibesCookie()) return notConfigured();
@@ -45,7 +46,7 @@ export async function POST(request: NextRequest) {
       : imageBase64;
     let buffer = Buffer.from(cleanB64, "base64");
 
-    // Compress to JPEG to reduce base64 size (avoids Vercel 4.5MB body limit)
+    // Compress to JPEG (reduces size)
     try {
       buffer = await sharp(buffer)
         .jpeg({ quality: 85, mozjpeg: true })
@@ -54,9 +55,12 @@ export async function POST(request: NextRequest) {
       // If compression fails, use original
     }
 
-    // Upload to vibes.ai
-    const b64 = buffer.toString("base64");
-    const uploadResp = await client.uploadImage(b64);
+    // Upload via /api/upload-media (multipart) — returns uploadToken!
+    const formData = new FormData();
+    const blob = new Blob([buffer], { type: "image/jpeg" });
+    formData.append("file", blob, filename);
+
+    const uploadResp = await client.uploadMedia(formData as any);
 
     if (!uploadResp?.mediaEntId) {
       return NextResponse.json(
@@ -65,7 +69,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Register in project
+    // Register in project (needs uploadToken from upload-media)
     let sourceImageEntId = uploadResp.mediaEntId;
     let registered = false;
 
@@ -75,7 +79,7 @@ export async function POST(request: NextRequest) {
           {
             mediaEntId: uploadResp.mediaEntId,
             uploadToken: uploadResp.uploadToken || "",
-            cdnUrl: uploadResp.imageUrl || uploadResp.cdnUrl || "",
+            cdnUrl: uploadResp.cdnUrl || uploadResp.imageUrl || "",
             filename,
           },
         ]);
@@ -90,7 +94,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       mediaEntId: uploadResp.mediaEntId,
       sourceImageEntId,
-      imageUrl: uploadResp.imageUrl || uploadResp.cdnUrl || "",
+      imageUrl: uploadResp.cdnUrl || uploadResp.imageUrl || "",
       uploadToken: uploadResp.uploadToken || "",
       registered,
     });
