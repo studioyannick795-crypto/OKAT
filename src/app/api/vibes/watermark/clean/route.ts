@@ -1,16 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
 import { inpaintWatermarkOptix } from "@/lib/optix-inpaint";
+import { stampLogo } from "@/lib/logo-stamp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
+const REMOVE_API = "https://remove-ai.space-z.ai/api/remove-watermark";
+
 /**
  * POST /api/vibes/watermark/clean
  *
- * Uses the Optix inpainting algorithm (Fast Marching Radial).
- * 100% local — no external API.
+ * 1. Optix inpainting (removes watermark, auto-detects ratio)
+ * 2. Stamp Nelth-IA logo (auto-detects ratio for correct zone)
  *
  * Body: { image_url: string, ratio?: string }
  */
@@ -54,8 +57,15 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Use Optix inpainting (auto-detects ratio from image dimensions)
-    const cleaned = await inpaintWatermarkOptix(imageBuffer);
+    // Step 1: Optix inpainting (auto-detects ratio)
+    let cleaned = await inpaintWatermarkOptix(imageBuffer);
+
+    // Step 2: Stamp the Nelth-IA logo (auto-detects ratio from dimensions)
+    try {
+      cleaned = await stampLogo(cleaned);
+    } catch (e: any) {
+      console.error("[watermark] logo stamp failed:", e?.message);
+    }
 
     return new Response(cleaned, {
       status: 200,
@@ -64,7 +74,7 @@ export async function POST(request: NextRequest) {
         "Content-Length": String(cleaned.byteLength),
         "Cache-Control": "no-store",
         "X-Watermark-Removed": "true",
-        "X-Method": "optix-inpainting",
+        "X-Method": "optix-inpainting + logo",
       },
     });
   } catch (error: any) {
@@ -74,5 +84,5 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
-  return NextResponse.json({ service: "optix-inpainting", method: "fast-marching-radial" });
+  return NextResponse.json({ service: "optix-inpainting + logo", method: "fast-marching-radial" });
 }
