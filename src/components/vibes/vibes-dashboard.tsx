@@ -1423,6 +1423,7 @@ interface ImageEditResult {
 function ImageEditCard({ projects, onProjectCreated }: { projects: Project[]; onProjectCreated: (p: Project) => void }) {
   const [sourceImageEntId, setSourceImageEntId] = useState('')
   const [sourceImageUrl, setSourceImageUrl] = useState('')
+  const [uploadedImages, setUploadedImages] = useState<{ entId: string; url: string; name: string }[]>([])
   // Track whether the source is an uploaded image (mediaEntId) or a
   // generated/library image (imageEntId). vibes.ai's /api/generate/image-edit
   // endpoint only accepts imageEntIds from generated images — uploaded images
@@ -1571,6 +1572,56 @@ function ImageEditCard({ projects, onProjectCreated }: { projects: Project[]; on
     }
   }
 
+  async function handleUploadFiles(files: File[]) {
+    if (!projectId) {
+      toast.error('Select or create a project first')
+      return
+    }
+    setUploading(true)
+    try {
+      const results: { entId: string; url: string; name: string }[] = []
+      for (const file of files) {
+        if (!file.type.startsWith('image/')) continue
+        const arrayBuffer = await file.arrayBuffer()
+        const b64 = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''))
+        const res = await fetch('/api/vibes/upload/media', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image_base64: `data:${file.type};base64,${b64}`,
+            filename: file.name,
+            project_id: projectId,
+          }),
+        })
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '')
+          let errMsg = `HTTP ${res.status}`
+          try { errMsg = JSON.parse(errText).error || errMsg } catch {}
+          throw new Error(`${file.name}: ${errMsg}`)
+        }
+        const data = await res.json()
+        if (data.sourceImageEntId || data.mediaEntId) {
+          results.push({
+            entId: data.sourceImageEntId || data.mediaEntId,
+            url: data.imageUrl || '',
+            name: file.name,
+          })
+        }
+      }
+      if (results.length > 0) {
+        setUploadedImages(results)
+        setSourceImageEntId(results[0].entId)
+        setSourceImageUrl(results[0].url)
+        setSourceType('upload')
+        toast.success(`${results.length} image(s) uploaded — ready to edit!`)
+      }
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to upload images')
+    } finally {
+      setUploading(false)
+    }
+  }
+
   async function handleEdit() {
     if (!sourceImageEntId) {
       toast.error('Select or upload a source image first')
@@ -1642,24 +1693,45 @@ function ImageEditCard({ projects, onProjectCreated }: { projects: Project[]; on
           <div className="space-y-2">
             <Label>Source image</Label>
             {sourceImageUrl ? (
-              <div className="relative overflow-hidden rounded-lg border">
-                <CleanImage
-                  src={sourceImageUrl}
-                  alt="Source image"
-                  className="aspect-square w-full object-cover"
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="absolute right-2 top-2"
-                  onClick={() => {
-                    setSourceImageEntId('')
-                    setSourceImageUrl('')
-                    setSourceType('library')
-                  }}
-                >
-                  <Plus className="size-3.5" /> Change
-                </Button>
+              <div className="space-y-2">
+                <div className="relative overflow-hidden rounded-lg border">
+                  <CleanImage
+                    src={sourceImageUrl}
+                    alt="Source image"
+                    className="aspect-square w-full object-cover"
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="absolute right-2 top-2"
+                    onClick={() => {
+                      setSourceImageEntId('')
+                      setSourceImageUrl('')
+                      setUploadedImages([])
+                      setSourceType('library')
+                    }}
+                  >
+                    <Plus className="size-3.5" /> Change
+                  </Button>
+                </div>
+                {uploadedImages.length > 1 && (
+                  <div className="grid grid-cols-4 gap-2">
+                    {uploadedImages.map((img, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => {
+                          setSourceImageEntId(img.entId)
+                          setSourceImageUrl(img.url)
+                        }}
+                        className={`overflow-hidden rounded-md border transition-all hover:ring-2 hover:ring-amber-500 ${sourceImageEntId === img.entId ? 'ring-2 ring-amber-500' : ''}`}
+                        title={img.name}
+                      >
+                        <img src={img.url} alt={img.name} className="aspect-square w-full object-cover" loading="lazy" />
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
@@ -1682,10 +1754,11 @@ function ImageEditCard({ projects, onProjectCreated }: { projects: Project[]; on
                   ref={fileInputRef}
                   type="file"
                   accept="image/*"
+                  multiple
                   className="hidden"
                   onChange={(e) => {
-                    const f = e.target.files?.[0]
-                    if (f) handleUploadFile(f)
+                    const files = Array.from(e.target.files || [])
+                    if (files.length > 0) handleUploadFiles(files)
                     e.target.value = ''
                   }}
                 />
